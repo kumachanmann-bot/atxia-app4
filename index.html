@@ -1,0 +1,919 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>FMA 上肢リーチング測定 v0.4</title>
+
+<script>
+(function () {
+  function showBanner(msg) {
+    try {
+      var b = document.getElementById('globalErrorBanner');
+      if (!b) { document.addEventListener('DOMContentLoaded', function () { showBanner(msg); }); return; }
+      b.style.display = 'block';
+      var p = document.createElement('div');
+      p.textContent = msg; p.style.padding = '3px 0'; p.style.borderTop = '1px solid rgba(255,255,255,.35)';
+      b.appendChild(p);
+    } catch (e) {}
+  }
+  window.addEventListener('error', function (ev) {
+    var extra = (ev && ev.filename) ? (' @' + ev.filename.split('/').pop() + ':' + ev.lineno + ':' + ev.colno) : '';
+    showBanner('⚠ ' + ((ev && ev.message) ? ev.message : '詳細不明のエラー') + extra);
+    if (ev && ev.preventDefault) ev.preventDefault();
+  });
+  window.addEventListener('unhandledrejection', function (ev) {
+    showBanner('⚠ 非同期エラー: ' + ((ev && ev.reason) ? (ev.reason.message || String(ev.reason)) : '不明'));
+    if (ev && ev.preventDefault) ev.preventDefault();
+  });
+  window.__appShowError = showBanner;
+})();
+</script>
+
+<style>
+  :root{ --fg:#0f172a; --bg:#f1f5f9; --card:#fff; --accent:#2563eb; --danger:#c0392b; --ok:#16a34a; --warn:#b45309; --border:#e2e8f0; }
+  *{ box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body{ margin:0; padding:0; height:100%; overscroll-behavior:none; }
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Hiragino Kaku Gothic ProN",sans-serif; background:var(--bg); color:var(--fg);
+    display:flex; flex-direction:column;
+    height:100vh; height:100dvh;
+  }
+  #globalErrorBanner{ display:none; position:fixed; top:0; left:0; right:0; z-index:9999; background:#c0392b; color:#fff; font-size:11px; line-height:1.4; padding:6px 8px; max-height:34vh; overflow:auto; }
+
+  header{ flex:0 0 auto; padding:6px 12px; padding-top:calc(6px + env(safe-area-inset-top,0px)); background:var(--card); border-bottom:1px solid var(--border); }
+  header h1{ font-size:14px; margin:0; }
+  nav{ flex:0 0 auto; display:flex; gap:6px; padding:6px 8px; background:var(--card); border-bottom:1px solid var(--border); }
+  nav button{ flex:1; padding:8px 2px; border:none; background:#eef2f7; border-radius:8px; font-size:12.5px; color:#475569; }
+  nav button.active{ background:var(--accent); color:#fff; font-weight:700; }
+
+  .tab{ display:none; }
+  .tab.active{ display:flex; flex-direction:column; flex:1 1 auto; min-height:0; }
+  /* シート印刷・精度確認タブは通常どおりスクロール可 */
+  #tab-sheet.active, #tab-test.active{ overflow-y:auto; padding:10px 12px 24px; display:block; }
+
+  /* ============ ②測定タブ: 上55% カメラ / 下45% データパネル、ページ全体はスクロールしない ============ */
+  #tab-measure.active{ overflow:hidden; }
+  #camAreaHome{ flex:0 0 55%; min-height:0; }
+  #camArea{ position:relative; width:100%; height:100%; background:#000; overflow:hidden; }
+  #video, #overlay{ position:absolute; inset:0; width:100%; height:100%; object-fit:contain; background:#000; }
+  #dataPanel{ flex:1 1 45%; min-height:0; display:flex; flex-direction:column; background:var(--card); border-top:1px solid var(--border); }
+
+  .badge{ position:absolute; z-index:5; background:rgba(15,23,42,.72); color:#fff; font-weight:700; padding:4px 8px; border-radius:7px; font-size:12.5px; line-height:1.3; }
+  #badgeStatus{ top:6px; left:6px; } #badgeReli{ top:6px; right:6px; }
+  #badgeWobble{ bottom:6px; left:6px; } #badgeTargetDist{ bottom:6px; right:6px; }
+  .badge.ok{ background:rgba(22,163,74,.82); } .badge.warn{ background:rgba(180,83,9,.82); } .badge.bad{ background:rgba(192,57,43,.82); }
+
+  .metaRow{ flex:0 0 auto; display:flex; gap:6px; padding:6px 8px; border-bottom:1px solid var(--border); }
+  .metaRow input, .metaRow select{ font-size:12px; padding:5px 6px; border:1px solid var(--border); border-radius:6px; width:100%; }
+  .metaRow label{ font-size:10px; color:#64748b; display:block; }
+
+  .liveRow{ flex:0 0 auto; display:flex; padding:8px 10px 4px; gap:8px; }
+  .liveCell{ flex:1; text-align:center; }
+  .liveCell .lbl{ font-size:12px; color:#64748b; font-weight:600; }
+  .liveCell .val{ font-size:26px; font-weight:800; font-variant-numeric:tabular-nums; line-height:1.2; }
+  .liveCell .val.status-ok{ color:var(--ok); } .liveCell .val.status-warn{ color:var(--warn); } .liveCell .val.status-bad{ color:var(--danger); }
+
+  .toggleRow{ flex:0 0 auto; display:flex; flex-wrap:wrap; gap:5px; padding:4px 10px; }
+  .chip{ font-size:11px; background:#eef2f7; border-radius:14px; padding:5px 9px; display:flex; align-items:center; gap:4px; color:#334155; }
+  .chip input{ margin:0; }
+
+  .actionRow{ flex:0 0 auto; display:flex; gap:8px; padding:6px 10px; }
+  .btn{ background:var(--accent); color:#fff; border:none; padding:11px 10px; border-radius:9px; font-size:14.5px; font-weight:700; flex:1; }
+  .btn:disabled{ background:#cbd5e1; color:#f1f5f9; }
+  .btn.secondary{ background:#64748b; } .btn.danger{ background:var(--danger); }
+  .btn.small{ padding:8px 6px; font-size:12.5px; flex:1; }
+
+  .qcLine{ flex:0 0 auto; font-size:10.5px; color:#64748b; padding:0 10px 4px; white-space:nowrap; overflow-x:auto; }
+  .qcLine b.ok{ color:var(--ok); } .qcLine b.ng{ color:var(--danger); }
+
+  #historyArea{ flex:1 1 auto; min-height:0; overflow-y:auto; padding:0 10px; border-top:1px dashed var(--border); }
+  table{ width:100%; border-collapse:collapse; font-size:12px; } th,td{ border-bottom:1px solid #eee; padding:5px 3px; text-align:right; } th:first-child,td:first-child{ text-align:left; }
+  #statsCaption{ font-size:11px; color:#64748b; padding:4px 0; }
+
+  .saveRow{ flex:0 0 auto; display:flex; gap:6px; padding:6px 10px; padding-bottom:calc(6px + env(safe-area-inset-bottom,0px)); border-top:1px solid var(--border); }
+  #toast{ flex:0 0 auto; font-size:11.5px; color:var(--ok); font-weight:700; padding:0 10px 4px; min-height:16px; }
+
+  /* ============ ①③タブ用（通常レイアウト） ============ */
+  .card{ background:var(--card); border-radius:12px; padding:14px; margin-bottom:12px; box-shadow:0 2px 8px rgba(0,0,0,.07); }
+  .card h2{ font-size:14px; margin:0 0 8px; }
+  .warnbox{ background:#fff7ed; border-left:4px solid #ea580c; padding:10px; border-radius:4px; font-size:12.5px; margin-bottom:10px; }
+  .infobox{ background:#eff6ff; border-left:4px solid #3b82f6; padding:10px; border-radius:4px; font-size:12.5px; margin-bottom:10px; }
+  .caption{ font-size:11.5px; color:#64748b; margin-top:6px; line-height:1.5; }
+  .num{ font-variant-numeric:tabular-nums; }
+  .bignum{ font-size:28px; font-weight:800; text-align:center; margin:4px 0; }
+  .row{ display:flex; gap:8px; } .row>*{ flex:1; }
+  input[type=text],input[type=number]{ width:100%; padding:9px; border:1px solid var(--border); border-radius:8px; font-size:16px; }
+  label.l{ font-size:12px; color:#475569; display:block; margin-bottom:3px; }
+  .psPreview{ border:1px solid #cbd5e1; background:#fff; } .psPreview svg{ display:block; width:100%; height:auto; }
+  .testVideoWrap{ position:relative; width:100%; background:#000; border-radius:10px; overflow:hidden; aspect-ratio:3/4; }
+
+  #printArea{ display:none; }
+  @media print{
+    @page{ size:A4; margin:0; }
+    html,body{ background:#fff !important; height:auto !important; overflow:visible !important; display:block !important; }
+    body > *:not(#printArea){ display:none !important; }
+    #printArea{ display:block !important; width:210mm; height:297mm; overflow:hidden; }
+    #printArea svg{ display:block; width:210mm; height:297mm; }
+  }
+</style>
+</head>
+<body>
+
+<div id="globalErrorBanner"></div>
+
+<header><h1>FMA 上肢リーチング測定 v0.4</h1></header>
+
+<nav>
+  <button data-tab="sheet" class="active">① シート印刷</button>
+  <button data-tab="measure">② 測定</button>
+  <button data-tab="test">③ 精度確認</button>
+</nav>
+
+<!-- ============ ① シート（通常レイアウト） ============ -->
+<section id="tab-sheet" class="tab active">
+  <div class="card">
+    <h2>ターゲットシート（A4縦）</h2>
+    <div class="warnbox">⚠ 印刷は倍率100%（実際のサイズ）で。印刷後、シート下部の「100 mm」バーを定規で確認してください。</div>
+    <button class="btn" id="printBtn">🖨 印刷する</button>
+    <div class="row" style="margin-top:8px;">
+      <button class="btn secondary" id="saveSvgSheetBtn">SVGで保存</button>
+      <button class="btn secondary" id="savePngSheetBtn">PNGで保存(300dpi)</button>
+    </div>
+    <div class="caption">印刷できない場合はPNG/SVGを保存し、写真/プリンタアプリから「原寸」で印刷してください。</div>
+    <div class="psPreview" id="sheetPreview" style="margin-top:8px;"></div>
+  </div>
+</section>
+
+<!-- ============ ② 測定（1画面完結: 上55%カメラ/下45%データ） ============ -->
+<section id="tab-measure" class="tab">
+  <div id="camAreaHome"><div id="camArea">
+    <video id="video" playsinline webkit-playsinline muted autoplay></video>
+    <canvas id="overlay"></canvas>
+    <div class="badge" id="badgeStatus">カメラ未起動</div>
+    <div class="badge" id="badgeReli">信頼度 --%</div>
+    <div class="badge" id="badgeWobble">揺れ: -- mm</div>
+    <div class="badge" id="badgeTargetDist">目標まで: -- mm</div>
+  </div></div>
+
+  <div id="dataPanel">
+    <div class="metaRow">
+      <div><label>被験者ID</label><input type="text" id="subjectId" placeholder="A001"></div>
+      <div style="max-width:80px;"><label>手</label><select id="handSel"><option>右</option><option>左</option></select></div>
+      <div style="flex:0 0 auto;align-self:flex-end;"><button class="btn small" id="camBtn" style="white-space:nowrap;">📷 起動</button></div>
+    </div>
+
+    <div class="liveRow">
+      <div class="liveCell"><div class="lbl">状態</div><div class="val" id="statusVal" style="font-size:15px;">未起動</div></div>
+      <div class="liveCell"><div class="lbl">到達誤差(mm)</div><div class="val num" id="liveErrReadout">--</div></div>
+      <div class="liveCell"><div class="lbl">最大揺れ(mm)</div><div class="val num" id="liveWobbleReadout">--</div></div>
+    </div>
+
+    <div class="qcLine" id="qcLine">四隅検出待ち…</div>
+
+    <div class="toggleRow">
+      <label class="chip"><input type="checkbox" id="manualModeChk">手動タップ</label>
+      <label class="chip"><input type="checkbox" id="autoRecChk" checked>自動記録</label>
+      <label class="chip"><input type="checkbox" id="debugChk">デバッグ表示</label>
+    </div>
+
+    <div class="actionRow">
+      <button class="btn secondary" id="startTrialBtn">試行1を開始</button>
+      <button class="btn" id="recordBtn" disabled>今すぐ記録</button>
+    </div>
+    <div id="toast"></div>
+
+    <div id="historyArea">
+      <table id="resultsTable" style="display:none;">
+        <thead><tr><th>#</th><th>誤差</th><th>揺れ</th><th>信頼</th><th>方式</th></tr></thead>
+        <tbody id="resultsBody"></tbody>
+      </table>
+      <div id="statsCaption"></div>
+    </div>
+    <div class="saveRow">
+      <button class="btn small secondary" id="csvSaveBtn">CSV保存</button>
+      <button class="btn small secondary" id="jsonSaveBtn">軌跡JSON</button>
+      <button class="btn small secondary" id="pngResultBtn">結果PNG</button>
+      <button class="btn small danger" id="clearBtn">全削除</button>
+    </div>
+  </div>
+</section>
+
+<!-- ============ ③ 精度確認（通常レイアウト） ============ -->
+<section id="tab-test" class="tab">
+  <div class="card">
+    <h2>精度確認モード</h2>
+    <div class="infobox">シート下部の「100 mmバー」の両端、または定規の既知2点をタップして誤差を確認します。②で先にカメラを起動してください。</div>
+    <div class="testVideoWrap" id="videoHomeTest"></div>
+    <div class="bignum num" id="testResult">2点をタップ</div>
+    <div class="row">
+      <div><label class="l">実際の距離(mm)</label><input type="number" id="knownDist" value="100" inputmode="decimal"></div>
+      <div><label class="l">誤差</label><div id="testError" style="padding-top:8px;font-weight:800;font-size:18px;">--</div></div>
+    </div>
+    <button class="btn secondary" id="clearTestBtn" style="margin-top:8px;">タップ点をクリア</button>
+  </div>
+</section>
+
+<div id="printArea"></div>
+
+<script>
+/* ===========================================================
+   共通の数値ロジック（純粋関数。以前のバージョンと同一・検証済み）
+=========================================================== */
+function gaussSolve(Ain, bin) {
+  var n = bin.length;
+  var M = Ain.map(function (row, i) { return row.concat([bin[i]]); });
+  for (var col = 0; col < n; col++) {
+    var piv = col;
+    for (var r = col + 1; r < n; r++) if (Math.abs(M[r][col]) > Math.abs(M[piv][col])) piv = r;
+    var tmp = M[col]; M[col] = M[piv]; M[piv] = tmp;
+    var div = M[col][col];
+    if (Math.abs(div) < 1e-12) return null;
+    for (var c = col; c <= n; c++) M[col][c] /= div;
+    for (var r2 = 0; r2 < n; r2++) {
+      if (r2 === col) continue;
+      var f = M[r2][col]; if (f === 0) continue;
+      for (var c2 = col; c2 <= n; c2++) M[r2][c2] -= f * M[col][c2];
+    }
+  }
+  return M.map(function (row) { return row[n]; });
+}
+function invertMatrix(m, n) {
+  var M = m.map(function (row, i) { var e = []; for (var j = 0; j < n; j++) e.push(i === j ? 1 : 0); return row.concat(e); });
+  for (var col = 0; col < n; col++) {
+    var piv = col;
+    for (var r = col + 1; r < n; r++) if (Math.abs(M[r][col]) > Math.abs(M[piv][col])) piv = r;
+    var tmp = M[col]; M[col] = M[piv]; M[piv] = tmp;
+    var div = M[col][col];
+    if (Math.abs(div) < 1e-12) return null;
+    for (var c = 0; c < 2 * n; c++) M[col][c] /= div;
+    for (var r2 = 0; r2 < n; r2++) {
+      if (r2 === col) continue;
+      var f = M[r2][col]; if (f === 0) continue;
+      for (var c2 = 0; c2 < 2 * n; c2++) M[r2][c2] -= f * M[col][c2];
+    }
+  }
+  return M.map(function (row) { return row.slice(n); });
+}
+function solveHomography(points) {
+  var ATA = []; for (var i = 0; i < 8; i++) ATA.push(new Array(8).fill(0));
+  var ATb = new Array(8).fill(0);
+  function addRow(row, rhs) { for (var i2 = 0; i2 < 8; i2++) { ATb[i2] += row[i2] * rhs; for (var j2 = 0; j2 < 8; j2++) ATA[i2][j2] += row[i2] * row[j2]; } }
+  for (var k = 0; k < points.length; k++) {
+    var p = points[k], x = p.x, y = p.y, X = p.X, Y = p.Y;
+    addRow([x, y, 1, 0, 0, 0, -x * X, -y * X], X);
+    addRow([0, 0, 0, x, y, 1, -x * Y, -y * Y], Y);
+  }
+  var h = gaussSolve(ATA, ATb);
+  if (!h) return null;
+  return [h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], 1];
+}
+function applyH(H, x, y) {
+  var X = H[0] * x + H[1] * y + H[2], Y = H[3] * x + H[4] * y + H[5], W = H[6] * x + H[7] * y + H[8];
+  return { x: X / W, y: Y / W };
+}
+function invertH(H) {
+  var inv = invertMatrix([[H[0], H[1], H[2]], [H[3], H[4], H[5]], [H[6], H[7], H[8]]], 3);
+  if (!inv) return null;
+  return [inv[0][0], inv[0][1], inv[0][2], inv[1][0], inv[1][1], inv[1][2], inv[2][0], inv[2][1], inv[2][2]];
+}
+function toGray(data, width, height) {
+  var gray = new Float32Array(width * height);
+  for (var i = 0, p = 0; p < width * height; i += 4, p++) gray[p] = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+  return gray;
+}
+function integralImage(gray, width, height) {
+  var integral = new Float64Array((width + 1) * (height + 1));
+  for (var y = 0; y < height; y++) {
+    var rowSum = 0;
+    for (var x = 0; x < width; x++) { rowSum += gray[y * width + x]; integral[(y + 1) * (width + 1) + (x + 1)] = integral[y * (width + 1) + (x + 1)] + rowSum; }
+  }
+  return integral;
+}
+function adaptiveThreshold(gray, width, height, windowRatio, k) {
+  var win = Math.max(9, Math.round(Math.min(width, height) * windowRatio));
+  if (win % 2 === 0) win += 1;
+  var half = win >> 1;
+  var integral = integralImage(gray, width, height);
+  var mask = new Uint8Array(width * height);
+  for (var y = 0; y < height; y++) {
+    var y0 = Math.max(0, y - half), y1 = Math.min(height - 1, y + half);
+    for (var x = 0; x < width; x++) {
+      var x0 = Math.max(0, x - half), x1 = Math.min(width - 1, x + half);
+      var area = (x1 - x0 + 1) * (y1 - y0 + 1);
+      var sum = integral[(y1 + 1) * (width + 1) + (x1 + 1)] - integral[y0 * (width + 1) + (x1 + 1)] - integral[(y1 + 1) * (width + 1) + x0] + integral[y0 * (width + 1) + x0];
+      mask[y * width + x] = gray[y * width + x] < sum / area - k ? 1 : 0;
+    }
+  }
+  return mask;
+}
+function connectedComponents(mask, width, height) {
+  var labels = new Int32Array(width * height).fill(-1);
+  var comps = [];
+  var stack = new Int32Array(width * height);
+  for (var start = 0; start < width * height; start++) {
+    if (mask[start] !== 1 || labels[start] !== -1) continue;
+    var sp = 0; stack[sp++] = start;
+    var label = comps.length; labels[start] = label;
+    var count = 0, sumX = 0, sumY = 0, minX = width, maxX = 0, minY = height, maxY = 0;
+    while (sp > 0) {
+      var idx = stack[--sp];
+      var x = idx % width, y = (idx / width) | 0;
+      count++; sumX += x; sumY += y;
+      if (x < minX) minX = x; if (x > maxX) maxX = x; if (y < minY) minY = y; if (y > maxY) maxY = y;
+      if (x > 0) { var n1 = idx - 1; if (mask[n1] === 1 && labels[n1] === -1) { labels[n1] = label; stack[sp++] = n1; } }
+      if (x < width - 1) { var n2 = idx + 1; if (mask[n2] === 1 && labels[n2] === -1) { labels[n2] = label; stack[sp++] = n2; } }
+      if (y > 0) { var n3 = idx - width; if (mask[n3] === 1 && labels[n3] === -1) { labels[n3] = label; stack[sp++] = n3; } }
+      if (y < height - 1) { var n4 = idx + width; if (mask[n4] === 1 && labels[n4] === -1) { labels[n4] = label; stack[sp++] = n4; } }
+    }
+    comps.push({ count: count, cx: sumX / count, cy: sumY / count, minX: minX, maxX: maxX, minY: minY, maxY: maxY });
+  }
+  return { comps: comps, labels: labels };
+}
+function filterRingCandidates(comps, mask, width, height, opts) {
+  opts = opts || {};
+  var minArea = (opts.minArea !== undefined) ? opts.minArea : 30;
+  var maxArea = (opts.maxArea !== undefined) ? opts.maxArea : width * height * 0.2;
+  var out = [];
+  for (var i = 0; i < comps.length; i++) {
+    var c = comps[i];
+    if (c.count < minArea || c.count > maxArea) continue;
+    var w = c.maxX - c.minX + 1, h = c.maxY - c.minY + 1;
+    var aspect = w / h;
+    if (aspect < 0.3 || aspect > 3.2) continue;
+    var fill = c.count / (w * h);
+    if (fill < 0.5 || fill > 0.97) continue;
+    if (mask[Math.round(c.cy) * width + Math.round(c.cx)] === 1) continue;
+    out.push(c);
+  }
+  return out;
+}
+function orderCorners(pts) {
+  if (pts.length !== 4) return null;
+  var wm = pts.map(function (p) { return { c: p, s: p.cx + p.cy, d: p.cx - p.cy }; });
+  var TL = wm.reduce(function (a, b) { return a.s < b.s ? a : b; }).c;
+  var BR = wm.reduce(function (a, b) { return a.s > b.s ? a : b; }).c;
+  var TR = wm.reduce(function (a, b) { return a.d > b.d ? a : b; }).c;
+  var BL = wm.reduce(function (a, b) { return a.d < b.d ? a : b; }).c;
+  if (new Set([TL, TR, BR, BL]).size !== 4) return null;
+  return { TL: TL, TR: TR, BR: BR, BL: BL };
+}
+function crossProd(o, a, b) { return (a.cx - o.cx) * (b.cy - o.cy) - (a.cy - o.cy) * (b.cx - o.cx); }
+function isConvexQuad(q) {
+  var pts = [q.TL, q.TR, q.BR, q.BL], sign = 0;
+  for (var i = 0; i < 4; i++) {
+    var cr = crossProd(pts[i], pts[(i + 1) % 4], pts[(i + 2) % 4]);
+    if (Math.abs(cr) < 1e-9) continue;
+    var s = cr > 0 ? 1 : -1;
+    if (sign === 0) sign = s; else if (s !== sign) return false;
+  }
+  return true;
+}
+function distC(a, b) { return Math.hypot(a.cx - b.cx, a.cy - b.cy); }
+function dist2(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
+function shapeQuality(q) {
+  var t = distC(q.TL, q.TR), b = distC(q.BL, q.BR), l = distC(q.TL, q.BL), r = distC(q.TR, q.BR);
+  var d1 = distC(q.TL, q.BR), d2 = distC(q.TR, q.BL);
+  return { sideRatio: Math.max(t, b) / Math.min(t, b), sideRatioV: Math.max(l, r) / Math.min(l, r), diagRatio: Math.max(d1, d2) / Math.min(d1, d2) };
+}
+
+/* ===========================================================
+   シート設計 (mm)
+=========================================================== */
+var SHEET = {
+  W: 210, H: 297, markerOuter: 24, markerInner: 10,
+  markers: { TL: { x: 27, y: 27 }, TR: { x: 183, y: 27 }, BR: { x: 183, y: 270 }, BL: { x: 27, y: 270 } },
+  start: { x: 105, y: 250, half: 13 },
+  target: { x: 105, y: 95, r: 15 },
+  bar: { x1: 55, x2: 155, y: 278 }
+};
+function sheetSVG(sized) {
+  var W = SHEET.W, H = SHEET.H, p = [];
+  p.push('<svg xmlns="http://www.w3.org/2000/svg" ' + (sized ? 'width="' + W + 'mm" height="' + H + 'mm" ' : '') + 'viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="xMidYMid meet">');
+  p.push('<rect x="0" y="0" width="' + W + '" height="' + H + '" fill="#ffffff"/>');
+  ['TL', 'TR', 'BR', 'BL'].forEach(function (k) {
+    var m = SHEET.markers[k], oh = SHEET.markerOuter / 2, ih = SHEET.markerInner / 2;
+    p.push('<rect x="' + (m.x - oh) + '" y="' + (m.y - oh) + '" width="' + SHEET.markerOuter + '" height="' + SHEET.markerOuter + '" fill="#000"/>');
+    p.push('<rect x="' + (m.x - ih) + '" y="' + (m.y - ih) + '" width="' + SHEET.markerInner + '" height="' + SHEET.markerInner + '" fill="#fff"/>');
+  });
+  var s = SHEET.start;
+  p.push('<rect x="' + (s.x - s.half) + '" y="' + (s.y - s.half) + '" width="' + (s.half * 2) + '" height="' + (s.half * 2) + '" fill="none" stroke="#000" stroke-width="1.2"/>');
+  p.push('<text x="' + s.x + '" y="' + (s.y + 1.8) + '" font-size="5" text-anchor="middle" font-family="sans-serif" font-weight="bold" fill="#000">START</text>');
+  var t = SHEET.target;
+  p.push('<circle cx="' + t.x + '" cy="' + t.y + '" r="' + t.r + '" fill="none" stroke="#000" stroke-width="1.4"/>');
+  p.push('<line x1="' + (t.x - 4.5) + '" y1="' + t.y + '" x2="' + (t.x + 4.5) + '" y2="' + t.y + '" stroke="#000" stroke-width="0.5"/>');
+  p.push('<line x1="' + t.x + '" y1="' + (t.y - 4.5) + '" x2="' + t.x + '" y2="' + (t.y + 4.5) + '" stroke="#000" stroke-width="0.5"/>');
+  p.push('<circle cx="' + t.x + '" cy="' + t.y + '" r="0.5" fill="#000"/>');
+  var b = SHEET.bar;
+  p.push('<line x1="' + b.x1 + '" y1="' + b.y + '" x2="' + b.x2 + '" y2="' + b.y + '" stroke="#000" stroke-width="0.4"/>');
+  for (var x = b.x1; x <= b.x2 + 0.01; x += 10) {
+    var big = (x === b.x1 || x === b.x2);
+    p.push('<line x1="' + x + '" y1="' + (b.y - (big ? 2.5 : 1.5)) + '" x2="' + x + '" y2="' + (b.y + (big ? 2.5 : 1.5)) + '" stroke="#000" stroke-width="0.4"/>');
+  }
+  p.push('<text x="105" y="' + (b.y - 3.5) + '" font-size="3" text-anchor="middle" font-family="sans-serif" fill="#000">100 mm</text>');
+  p.push('<text x="105" y="' + (H - 6) + '" font-size="2.4" text-anchor="middle" font-family="sans-serif" fill="#000">A4 210x297mm / print at 100% (no scaling)</text>');
+  p.push('</svg>');
+  return p.join('');
+}
+function saveBlob(blob, filename, toastFn) {
+  try {
+    var file = null;
+    try { file = new File([blob], filename, { type: blob.type }); } catch (e) { file = null; }
+    if (file && navigator.canShare && navigator.canShare({ files: [file] }) && navigator.share) {
+      navigator.share({ files: [file], title: filename }).catch(function (err) { if (err && err.name === 'AbortError') return; fallbackDownload(blob, filename, toastFn); });
+      return;
+    }
+  } catch (e) {}
+  fallbackDownload(blob, filename, toastFn);
+}
+function fallbackDownload(blob, filename, toastFn) {
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a'); a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click();
+  setTimeout(function () { document.body.removeChild(a); URL.revokeObjectURL(url); }, 1500);
+  if (toastFn) toastFn('保存しました（別タブで開いた場合は長押し→「イメージ/ファイルを保存」）');
+}
+
+/* ===========================================================
+   モジュールA: ①シート（他機能に依存しない）
+=========================================================== */
+(function initSheet() {
+  try {
+    document.getElementById('sheetPreview').innerHTML = sheetSVG(false);
+    document.getElementById('printArea').innerHTML = sheetSVG(true);
+    document.getElementById('printBtn').addEventListener('click', function () { try { window.print(); } catch (e) { alert('印刷できませんでした。PNG/SVG保存をお試しください。'); } });
+    document.getElementById('saveSvgSheetBtn').addEventListener('click', function () { saveBlob(new Blob([sheetSVG(true)], { type: 'image/svg+xml' }), 'target_sheet_A4.svg'); });
+    document.getElementById('savePngSheetBtn').addEventListener('click', function () {
+      var svg = sheetSVG(true);
+      var img = new Image();
+      var url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' }));
+      img.onload = function () {
+        var cv = document.createElement('canvas'); cv.width = 2480; cv.height = 3508;
+        var ctx = cv.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, cv.width, cv.height);
+        ctx.drawImage(img, 0, 0, cv.width, cv.height); URL.revokeObjectURL(url);
+        cv.toBlob(function (b) { if (b) saveBlob(b, 'target_sheet_A4_300dpi.png'); else alert('PNG生成に失敗しました'); }, 'image/png');
+      };
+      img.onerror = function () { alert('PNG生成に失敗しました。SVG保存をお試しください。'); };
+      img.src = url;
+    });
+  } catch (e) { if (window.__appShowError) window.__appShowError('シート初期化エラー: ' + e.message); }
+})();
+
+/* タブ切替 */
+(function initTabs() {
+  try {
+    var tabs = document.querySelectorAll('nav button');
+    for (var i = 0; i < tabs.length; i++) {
+      tabs[i].addEventListener('click', function (ev) {
+        var btn = ev.currentTarget;
+        for (var j = 0; j < tabs.length; j++) tabs[j].classList.remove('active');
+        btn.classList.add('active');
+        var secs = document.querySelectorAll('.tab');
+        for (var k = 0; k < secs.length; k++) secs[k].classList.remove('active');
+        document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+        if (window.__moveVideo) {
+          if (btn.dataset.tab === 'test') window.__moveVideo(document.getElementById('videoHomeTest'));
+          if (btn.dataset.tab === 'measure') window.__moveVideo(document.getElementById('camAreaHome'));
+        }
+        if (window.__onTabChange) window.__onTabChange(btn.dataset.tab);
+      });
+    }
+  } catch (e) { if (window.__appShowError) window.__appShowError('タブ初期化エラー: ' + e.message); }
+})();
+
+/* ===========================================================
+   モジュールB: カメラ・マーカー認識・指先追跡・記録
+=========================================================== */
+(function initMeasure() {
+  try {
+    var $ = function (id) { return document.getElementById(id); };
+    var video = $('video'), overlay = $('overlay'), octx = overlay.getContext('2d');
+    var camArea = $('camArea');
+    window.__moveVideo = function (wrap) { if (wrap && camArea.parentElement !== wrap) wrap.appendChild(camArea); };
+
+    var procCanvas = document.createElement('canvas');
+    var pctx = procCanvas.getContext('2d', { willReadFrequently: true });
+
+    var handLandmarker = null;
+    var latest = { H: null, Hinv: null };
+    var lastGood = { H: null, Hinv: null, t: 0 };
+    var HOLD_MS = 1500;
+    var lastDetectTime = 0, DETECT_INTERVAL = 150;
+    var cornerHistory = [], lastQuality = { ok: false }, lastCandidates = [], lastMask = null;
+    var latestFingerPxVideo = null, currentFingerMM = null, fingerHistory = [];
+    var appReadyShown = false, trialActive = false, leftStart = false, trials = [];
+    var testClicks = [];
+    var rafId = null, running = false;
+
+    // 信頼度スコア（直近の検出試行のうちOKだった割合）
+    var reliWindow = [];
+    function pushReli(ok) { reliWindow.push(ok ? 1 : 0); if (reliWindow.length > 20) reliWindow.shift(); }
+    function reliPct() { if (!reliWindow.length) return null; return Math.round(100 * reliWindow.reduce(function (a, b) { return a + b; }, 0) / reliWindow.length); }
+
+    // 揺れ幅（振戦の簡易指標）: 直近250msの平均位置からの瞬時ズレの最大値
+    var trialMaxWobble = 0, liveWobble = 0;
+    var trialSamples = []; // {t,x,y,ok} 軌跡データ（保存用）
+    var trialFramesTotal = 0, trialFramesOK = 0;
+
+    function setStatus(kind, text) {
+      var el = $('badgeStatus'); el.className = 'badge ' + kind; el.textContent = text;
+      var sv = $('statusVal'); sv.textContent = text;
+      sv.className = 'val status-' + kind;
+    }
+    function toast(msg) { $('toast').textContent = msg; setTimeout(function () { if ($('toast').textContent === msg) $('toast').textContent = ''; }, 4500); }
+    function activeH(now) {
+      if (latest.H) return { H: latest.H, Hinv: latest.Hinv, stale: false };
+      if (lastGood.H && now - lastGood.t < HOLD_MS) return { H: lastGood.H, Hinv: lastGood.Hinv, stale: true };
+      return null;
+    }
+
+    /* ---------- object-fit:contain 前提の座標変換 ---------- */
+    function containRect() {
+      var r = overlay.getBoundingClientRect();
+      var vw = video.videoWidth, vh = video.videoHeight;
+      if (!vw || !vh || !r.width || !r.height) return null;
+      var scale = Math.min(r.width / vw, r.height / vh);
+      var dispW = vw * scale, dispH = vh * scale;
+      return { r: r, scale: scale, dispW: dispW, dispH: dispH, offX: (r.width - dispW) / 2, offY: (r.height - dispH) / 2 };
+    }
+    function clientToVideoPx(clientX, clientY) {
+      var m = containRect(); if (!m) return null;
+      var lx = clientX - m.r.left - m.offX, ly = clientY - m.r.top - m.offY;
+      if (lx < 0 || ly < 0 || lx > m.dispW || ly > m.dispH) return null;
+      return { x: lx / m.scale, y: ly / m.scale };
+    }
+
+    /* ---------- カメラ ---------- */
+    function startCamera() {
+      var camBtn = $('camBtn');
+      camBtn.disabled = true; camBtn.textContent = '起動中…';
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        setStatus('bad', 'カメラAPI不可(https必須)'); camBtn.disabled = false; camBtn.textContent = '📷 起動'; return;
+      }
+      navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false
+      }).then(function (stream) {
+        video.srcObject = stream;
+        return video.play();
+      }).then(function () {
+        return new Promise(function (resolve) { if (video.videoWidth) resolve(); else video.onloadedmetadata = function () { resolve(); }; });
+      }).then(function () {
+        var vw = video.videoWidth, vh = video.videoHeight;
+        overlay.width = vw; overlay.height = vh;
+        var s = 720 / Math.max(vw, vh); if (s > 1) s = 1;
+        procCanvas.width = Math.round(vw * s); procCanvas.height = Math.round(vh * s);
+        camBtn.style.display = 'none';
+        setStatus('warn', 'A4を映してください');
+        running = true; rafId = requestAnimationFrame(loop);
+        initHandTracking();
+      }).catch(function (e) {
+        setStatus('bad', 'カメラ起動失敗(' + e.name + ')');
+        camBtn.disabled = false; camBtn.textContent = '📷 起動';
+      });
+    }
+    $('camBtn').addEventListener('click', startCamera);
+
+    /* ---------- タブ非表示・バックグラウンド移行時の安全な一時停止/再開 ---------- */
+    document.addEventListener('visibilitychange', function () {
+      if (document.hidden) {
+        running = false;
+        if (rafId) cancelAnimationFrame(rafId); rafId = null;
+        try { video.pause(); } catch (e) {}
+      } else {
+        try { video.play().catch(function () {}); } catch (e) {}
+        if (!running && video.videoWidth) { running = true; rafId = requestAnimationFrame(loop); }
+      }
+    });
+    window.__onTabChange = function (tab) {
+      // 測定/テスト以外のタブに移った際も描画ループは止めない(カメラは継続)。
+      // 何もしない: カメラは②③間で共有し続ける。
+    };
+
+    /* ---------- 手指トラッキング（失敗しても他機能は継続） ---------- */
+    function initHandTracking() {
+      $('badgeReli').textContent = '追跡: 読込中';
+      var done = false;
+      var timer = setTimeout(function () {
+        if (done) return; done = true;
+        $('badgeReli').textContent = '追跡: 手動モード';
+        $('manualModeChk').checked = true;
+        toast('手指トラッキングの読み込みがタイムアウトしました。手動タップモードで測定できます。');
+      }, 25000);
+      import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/vision_bundle.mjs').then(function (mod) {
+        return mod.FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/wasm').then(function (vision) {
+          function make(delegate) {
+            return mod.HandLandmarker.createFromOptions(vision, {
+              baseOptions: { modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task', delegate: delegate },
+              runningMode: 'VIDEO', numHands: 1, minHandDetectionConfidence: 0.5, minHandPresenceConfidence: 0.5, minTrackingConfidence: 0.5
+            });
+          }
+          return make('GPU').catch(function () { return make('CPU'); });
+        });
+      }).then(function (lm) {
+        if (done) return; done = true; clearTimeout(timer);
+        handLandmarker = lm;
+      }).catch(function (e) {
+        if (done) return; done = true; clearTimeout(timer);
+        $('badgeReli').textContent = '追跡: 手動モード';
+        $('manualModeChk').checked = true;
+        toast('手指トラッキングを読み込めませんでした。手動タップモードで測定できます。');
+      });
+    }
+
+    /* ---------- メインループ ---------- */
+    function loop(ts) {
+      if (!running) return;
+      rafId = requestAnimationFrame(loop);
+      if (!video.videoWidth) return;
+      try { if (ts - lastDetectTime > DETECT_INTERVAL) { lastDetectTime = ts; runMarkerDetection(ts); } } catch (e) { console.error(e); }
+      try {
+        if (handLandmarker && !$('manualModeChk').checked) {
+          var res = null;
+          try { res = handLandmarker.detectForVideo(video, ts); } catch (e2) { res = null; }
+          processHand(res, ts);
+        }
+      } catch (e) { console.error(e); }
+      try { drawOverlay(ts); } catch (e) { console.error(e); }
+    }
+
+    function runMarkerDetection(ts) {
+      pctx.drawImage(video, 0, 0, procCanvas.width, procCanvas.height);
+      var imgData; try { imgData = pctx.getImageData(0, 0, procCanvas.width, procCanvas.height); } catch (e) { return; }
+      var W = procCanvas.width, H = procCanvas.height;
+      var gray = toGray(imgData.data, W, H);
+      var mask = adaptiveThreshold(gray, W, H, 0.08, 12);
+      lastMask = $('debugChk').checked ? mask : null;
+      var cc = connectedComponents(mask, W, H);
+      var cands = filterRingCandidates(cc.comps, mask, W, H, { minArea: W * H * 0.0004 });
+      lastCandidates = cands;
+      var qc = { count: cands.length };
+      function fail(reason) { latest = { H: null, Hinv: null }; lastQuality = { ok: false, reason: reason, qc: qc }; pushReli(false); if (trialActive) trialFramesTotal++; renderQuality(); }
+      if (cands.length !== 4) return fail('count');
+      var ordered = orderCorners(cands);
+      if (!ordered) return fail('order');
+      var convex = isConvexQuad(ordered), shape = shapeQuality(ordered);
+      var sizes = ['TL', 'TR', 'BR', 'BL'].map(function (k) { var c = ordered[k]; return Math.max(c.maxX - c.minX, c.maxY - c.minY); });
+      var sizeRatio = Math.max.apply(null, sizes) / Math.min.apply(null, sizes);
+      cornerHistory.push({ t: ts, o: ordered });
+      cornerHistory = cornerHistory.filter(function (h) { return ts - h.t < 1000; });
+      var jitter = 0;
+      if (cornerHistory.length >= 2) { var first = cornerHistory[0].o; ['TL', 'TR', 'BR', 'BL'].forEach(function (k) { jitter = Math.max(jitter, distC(first[k], ordered[k])); }); }
+      var stable = jitter < Math.max(W, H) * 0.02;
+      var pts = ['TL', 'TR', 'BR', 'BL'].map(function (k) { return { x: ordered[k].cx, y: ordered[k].cy, X: SHEET.markers[k].x, Y: SHEET.markers[k].y }; });
+      var Hm = solveHomography(pts);
+      if (!Hm) return fail('homography');
+      var tiltOK = shape.diagRatio < 1.8, sizeOK = sizeRatio < 2.2, shapeOK = shape.sideRatio < 2.5 && shape.sideRatioV < 2.5;
+      var ok = convex && tiltOK && sizeOK && shapeOK && stable;
+      latest = { H: Hm, Hinv: invertH(Hm) };
+      if (ok) lastGood = { H: latest.H, Hinv: latest.Hinv, t: ts };
+      pushReli(ok); if (trialActive) { trialFramesTotal++; if (ok) trialFramesOK++; }
+      lastQuality = { ok: ok, qc: qc, convex: convex, tiltOK: tiltOK, sizeOK: sizeOK, shapeOK: shapeOK, stable: stable, diagRatio: shape.diagRatio, sizeRatio: sizeRatio };
+      renderQuality();
+    }
+
+    function renderQuality() {
+      var q = lastQuality;
+      var parts = [];
+      parts.push((q.qc && q.qc.count === 4) ? '<b class="ok">四隅✔</b>' : '<b class="ng">四隅' + (q.qc ? q.qc.count : 0) + '/4</b>');
+      if (q.qc && q.qc.count === 4) {
+        parts.push(q.tiltOK ? '<b class="ok">角度✔</b>' : '<b class="ng">角度NG(歪' + q.diagRatio.toFixed(2) + ')</b>');
+        parts.push((q.sizeOK && q.shapeOK) ? '<b class="ok">形状✔</b>' : '<b class="ng">形状NG</b>');
+        parts.push(q.stable ? '<b class="ok">安定✔</b>' : '<b class="ng">不安定</b>');
+      }
+      $('qcLine').innerHTML = parts.join(' ');
+      var rp = reliPct();
+      var reliBadge = $('badgeReli');
+      if (rp !== null) reliBadge.textContent = 'マーカー信頼度 ' + rp + '%';
+      reliBadge.className = 'badge ' + (rp === null ? '' : rp >= 80 ? 'ok' : rp >= 40 ? 'warn' : 'bad');
+
+      if (!q.qc || q.qc.count !== 4) setStatus('bad', 'A4検出中(' + (q.qc ? q.qc.count : 0) + '/4)');
+      else if (!q.ok) setStatus('warn', '認識中…角度調整');
+      else setStatus('ok', '測定準備完了');
+
+      if (q.ok && !appReadyShown) appReadyShown = true;
+      $('recordBtn').disabled = !(trialActive && currentFingerMM);
+      $('startTrialBtn').disabled = !(q.ok || activeH(performance.now())) || trialActive;
+    }
+
+    /* ---------- 指先 → mm、揺れ幅 ---------- */
+    function processHand(res, ts) {
+      if (!res || !res.landmarks || res.landmarks.length === 0) { latestFingerPxVideo = null; currentFingerMM = null; return; }
+      var lm = res.landmarks[0][8];
+      var px = lm.x * video.videoWidth, py = lm.y * video.videoHeight;
+      latestFingerPxVideo = { x: px, y: py };
+      var ah = activeH(ts);
+      if (!ah) { currentFingerMM = null; return; }
+      var sx = procCanvas.width / video.videoWidth, sy = procCanvas.height / video.videoHeight;
+      var mm = applyH(ah.H, px * sx, py * sy);
+      updateFingerMM(mm.x, mm.y, ah.stale, ts, lastQuality.ok === true);
+    }
+    function updateFingerMM(x, y, stale, ts, qOK) {
+      currentFingerMM = { x: x, y: y, stale: stale };
+      fingerHistory.push({ t: ts, x: x, y: y, stale: stale });
+      fingerHistory = fingerHistory.filter(function (h) { return ts - h.t < 1200; });
+      var w = meanWindow(ts, 250);
+      if (w && w.n >= 3) { liveWobble = w.maxDev; if (trialActive) trialMaxWobble = Math.max(trialMaxWobble, w.maxDev); }
+      $('badgeWobble').textContent = '揺れ: ' + liveWobble.toFixed(1) + ' mm';
+      $('badgeTargetDist').textContent = '目標まで: ' + Math.hypot(x - SHEET.target.x, y - SHEET.target.y).toFixed(0) + ' mm';
+      if (trialActive) { trialSamples.push({ t: Math.round(ts), x: Math.round(x * 10) / 10, y: Math.round(y * 10) / 10, ok: qOK }); updateTrial(ts); }
+    }
+    function meanWindow(ts, ms) {
+      var pts = fingerHistory.filter(function (h) { return ts - h.t <= ms; });
+      if (!pts.length) return null;
+      var mx = 0, my = 0; pts.forEach(function (p) { mx += p.x; my += p.y; }); mx /= pts.length; my /= pts.length;
+      var dev = 0, maxDev = 0; pts.forEach(function (p) { var d = Math.hypot(p.x - mx, p.y - my); dev += d * d; if (d > maxDev) maxDev = d; });
+      return { x: mx, y: my, n: pts.length, sd: Math.sqrt(dev / pts.length), maxDev: maxDev, t0: pts[0].t, stale: pts.some(function (p) { return p.stale; }) };
+    }
+    function updateTrial(ts) {
+      if (!currentFingerMM) return;
+      var e = Math.hypot(currentFingerMM.x - SHEET.target.x, currentFingerMM.y - SHEET.target.y);
+      $('liveErrReadout').textContent = e.toFixed(1);
+      $('liveWobbleReadout').textContent = trialMaxWobble.toFixed(1);
+      var ds = Math.hypot(currentFingerMM.x - SHEET.start.x, currentFingerMM.y - SHEET.start.y);
+      if (ds > 40) leftStart = true;
+      if (!$('autoRecChk').checked || !leftStart) return;
+      var w = meanWindow(ts, 500);
+      if (w && w.n >= 6 && ts - w.t0 >= 400 && w.maxDev <= 5) captureTrial('auto', w);
+    }
+
+    /* ---------- 記録 ---------- */
+    function resetTrialCounters() { trialMaxWobble = 0; trialSamples = []; trialFramesTotal = 0; trialFramesOK = 0; }
+    function captureTrial(mode, win) {
+      var now = performance.now();
+      var w = win || meanWindow(now, 250);
+      var pos = w ? { x: w.x, y: w.y, sd: w.sd, stale: w.stale } : (currentFingerMM ? { x: currentFingerMM.x, y: currentFingerMM.y, sd: 0, stale: currentFingerMM.stale } : null);
+      if (!pos) { if (mode !== 'auto') alert('指先位置が取得できていません。手動タップモードの場合は画面をタップしてから記録してください。'); return; }
+      var dx = pos.x - SHEET.target.x, dy = pos.y - SHEET.target.y;
+      var reliability = trialFramesTotal > 0 ? Math.round(100 * trialFramesOK / trialFramesTotal) : (reliPct() || 0);
+      trials.push({
+        n: trials.length + 1, ts: new Date().toISOString(), mode: mode,
+        tx: SHEET.target.x, ty: SHEET.target.y, rx: pos.x, ry: pos.y, dx: dx, dy: dy, err: Math.hypot(dx, dy),
+        wobble: trialMaxWobble, reliability: reliability, qualityOK: lastQuality.ok === true, stale: !!pos.stale,
+        diag: lastQuality.diagRatio || 0, trajectory: trialSamples.slice()
+      });
+      trialActive = false; leftStart = false; fingerHistory = [];
+      $('startTrialBtn').textContent = '試行' + (trials.length + 1) + 'を開始';
+      $('startTrialBtn').disabled = false;
+      resetTrialCounters();
+      renderTrials();
+      toast('試行' + trials.length + '記録: 誤差' + trials[trials.length - 1].err.toFixed(1) + 'mm / 揺れ' + trials[trials.length - 1].wobble.toFixed(1) + 'mm' + (mode === 'auto' ? '(自動)' : ''));
+    }
+    $('startTrialBtn').addEventListener('click', function () {
+      trialActive = true; leftStart = false; fingerHistory = []; resetTrialCounters();
+      $('liveErrReadout').textContent = '--'; $('liveWobbleReadout').textContent = '--';
+      $('startTrialBtn').textContent = '試行中…'; $('startTrialBtn').disabled = true;
+      
+      if ($('manualModeChk').checked) currentFingerMM = null;
+    });
+    $('recordBtn').addEventListener('click', function () { captureTrial('manual'); });
+
+    function stats() {
+      var e = trials.map(function (t) { return t.err; });
+      var mean = e.reduce(function (a, b) { return a + b; }, 0) / e.length;
+      var sd = Math.sqrt(e.reduce(function (a, b) { return a + (b - mean) * (b - mean); }, 0) / e.length);
+      var w = trials.map(function (t) { return t.wobble; });
+      return { mean: mean, sd: sd, max: Math.max.apply(null, e), min: Math.min.apply(null, e), meanWobble: w.reduce(function (a, b) { return a + b; }, 0) / w.length };
+    }
+    function renderTrials() {
+      
+      $('resultsBody').innerHTML = trials.map(function (t) {
+        var q = (t.qualityOK && !t.stale) ? '○' : '△';
+        return '<tr><td>' + t.n + '</td><td>' + t.err.toFixed(1) + '</td><td>' + t.wobble.toFixed(1) + '</td><td>' + t.reliability + '%</td><td>' + (t.mode === 'auto' ? '自動' : '手動') + q + '</td></tr>';
+      }).join('');
+      $('resultsTable').style.display = trials.length ? 'table' : 'none';
+      if (trials.length) {
+        var s = stats();
+        $('statsCaption').textContent = '平均誤差' + s.mean.toFixed(1) + 'mm SD' + s.sd.toFixed(1) + ' / 平均揺れ' + s.meanWobble.toFixed(1) + 'mm (n=' + trials.length + ')。診断スコアではなく生の測定値の要約です。';
+      } else { $('statsCaption').textContent = ''; }
+    }
+    function csvText() {
+      var head = ['session', 'subject', 'hand', 'trial', 'timestamp', 'target_x_mm', 'target_y_mm', 'reach_x_mm', 'reach_y_mm', 'dx_mm', 'dy_mm', 'error_mm', 'max_wobble_mm', 'marker_reliability_pct', 'mode', 'quality_ok', 'marker_stale', 'diag_ratio'];
+      var sid = sessionId, subj = $('subjectId').value.replace(/[",\n]/g, ' '), hand = $('handSel').value;
+      var rows = trials.map(function (t) {
+        return [sid, subj, hand, t.n, t.ts, t.tx, t.ty, t.rx.toFixed(2), t.ry.toFixed(2), t.dx.toFixed(2), t.dy.toFixed(2), t.err.toFixed(2), t.wobble.toFixed(2), t.reliability, t.mode, t.qualityOK ? 1 : 0, t.stale ? 1 : 0, t.diag.toFixed(3)].join(',');
+      });
+      return '\uFEFF' + head.join(',') + '\n' + rows.join('\n') + '\n';
+    }
+    var sessionId = 'S' + new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+    function fname(ext) { var s = $('subjectId').value.replace(/[^\w\-]/g, '') || 'noid'; return 'fma_' + s + '_' + sessionId + '.' + ext; }
+
+    $('csvSaveBtn').addEventListener('click', function () { if (!trials.length) { alert('記録がまだありません'); return; } saveBlob(new Blob([csvText()], { type: 'text/csv;charset=utf-8' }), fname('csv'), toast); });
+    $('jsonSaveBtn').addEventListener('click', function () {
+      if (!trials.length) { alert('記録がまだありません'); return; }
+      var data = { session: sessionId, subject: $('subjectId').value, hand: $('handSel').value, sheet: SHEET, trials: trials.map(function (t) { return { n: t.n, err: t.err, wobble: t.wobble, reliability: t.reliability, mode: t.mode, trajectory: t.trajectory }; }) };
+      saveBlob(new Blob([JSON.stringify(data, null, 1)], { type: 'application/json' }), fname('trajectory.json'), toast);
+    });
+    $('clearBtn').addEventListener('click', function () { if (trials.length && confirm('全ての記録を削除しますか？')) { trials = []; renderTrials(); } });
+
+    $('pngResultBtn').addEventListener('click', function () {
+      if (!trials.length) { alert('記録がまだありません'); return; }
+      var S = 2, ox = 20, oy = 20;
+      var lines = trials.length + 6;
+      var cw = 210 * S + ox * 2, ch = 297 * S + oy + 30 + lines * 17 + 10;
+      var cv = document.createElement('canvas'); cv.width = cw; cv.height = ch;
+      var c = cv.getContext('2d'); c.fillStyle = '#fff'; c.fillRect(0, 0, cw, ch);
+      c.strokeStyle = '#94a3b8'; c.lineWidth = 1; c.strokeRect(ox, oy, 210 * S, 297 * S);
+      ['TL', 'TR', 'BR', 'BL'].forEach(function (k) {
+        var m = SHEET.markers[k], o = 12 * S, i = 5 * S;
+        c.fillStyle = '#000'; c.fillRect(ox + m.x * S - o, oy + m.y * S - o, o * 2, o * 2);
+        c.fillStyle = '#fff'; c.fillRect(ox + m.x * S - i, oy + m.y * S - i, i * 2, i * 2);
+      });
+      var s = SHEET.start; c.strokeStyle = '#000'; c.lineWidth = 1.5;
+      c.strokeRect(ox + (s.x - s.half) * S, oy + (s.y - s.half) * S, s.half * 2 * S, s.half * 2 * S);
+      c.fillStyle = '#000'; c.font = 'bold 12px sans-serif'; c.textAlign = 'center'; c.fillText('START', ox + s.x * S, oy + s.y * S + 4);
+      var t = SHEET.target, tx = ox + t.x * S, ty = oy + t.y * S;
+      c.strokeStyle = '#cbd5e1'; c.lineWidth = 1; c.setLineDash([4, 3]); c.font = '10px sans-serif'; c.fillStyle = '#64748b';
+      [10, 20, 30, 40].forEach(function (r) { c.beginPath(); c.arc(tx, ty, r * S, 0, Math.PI * 2); c.stroke(); c.fillText(r + 'mm', tx + r * S * 0.71 + 2, ty - r * S * 0.71); });
+      c.setLineDash([]);
+      c.strokeStyle = '#000'; c.lineWidth = 2; c.beginPath(); c.arc(tx, ty, t.r * S, 0, Math.PI * 2); c.stroke();
+      c.beginPath(); c.moveTo(tx - 9, ty); c.lineTo(tx + 9, ty); c.moveTo(tx, ty - 9); c.lineTo(tx, ty + 9); c.stroke();
+      trials.forEach(function (tr) {
+        var px = ox + tr.rx * S, py = oy + tr.ry * S;
+        c.strokeStyle = 'rgba(220,38,38,.45)'; c.lineWidth = 1; c.beginPath(); c.moveTo(tx, ty); c.lineTo(px, py); c.stroke();
+        c.fillStyle = '#dc2626'; c.beginPath(); c.arc(px, py, 4, 0, Math.PI * 2); c.fill();
+        c.fillStyle = '#7f1d1d'; c.font = 'bold 12px sans-serif'; c.textAlign = 'left'; c.fillText(String(tr.n), px + 6, py - 5);
+      });
+      var y = oy + 297 * S + 24, st = stats();
+      c.fillStyle = '#0f172a'; c.textAlign = 'left'; c.font = 'bold 13px sans-serif';
+      c.fillText('被験者: ' + ($('subjectId').value || '-') + '  手: ' + $('handSel').value + '  ' + new Date().toLocaleString('ja-JP'), ox, y); y += 18;
+      c.font = '12px sans-serif';
+      c.fillText('平均誤差 ' + st.mean.toFixed(1) + 'mm SD ' + st.sd.toFixed(1) + '  平均揺れ ' + st.meanWobble.toFixed(1) + 'mm (n=' + trials.length + ')', ox, y); y += 18;
+      c.fillStyle = '#475569'; c.fillText('#  誤差mm  揺れmm 信頼%  方式', ox, y); y += 17;
+      c.font = '12px monospace';
+      trials.forEach(function (tr) {
+        c.fillStyle = '#0f172a';
+        c.fillText(String(tr.n).padEnd(3) + tr.err.toFixed(1).padStart(7) + tr.wobble.toFixed(1).padStart(8) + String(tr.reliability).padStart(6) + '%  ' + (tr.mode === 'auto' ? 'auto' : 'man'), ox, y); y += 17;
+      });
+      cv.toBlob(function (b) { if (b) saveBlob(b, fname('png'), toast); else alert('画像生成に失敗しました'); }, 'image/png');
+    });
+
+    /* ---------- オーバーレイ描画（object-fit:contain。同じ座標系を使う） ---------- */
+    function drawOverlay(ts) {
+      var w = overlay.width, h = overlay.height;
+      octx.clearRect(0, 0, w, h);
+      var kx = w / procCanvas.width, ky = h / procCanvas.height;
+      if ($('debugChk').checked && lastMask) {
+        var id = new ImageData(procCanvas.width, procCanvas.height);
+        for (var i = 0; i < lastMask.length; i++) { var v = lastMask[i]; id.data[i * 4] = 255; id.data[i * 4 + 1] = 0; id.data[i * 4 + 2] = 0; id.data[i * 4 + 3] = v ? 110 : 0; }
+        var tmp = document.createElement('canvas'); tmp.width = procCanvas.width; tmp.height = procCanvas.height;
+        tmp.getContext('2d').putImageData(id, 0, 0);
+        octx.drawImage(tmp, 0, 0, w, h);
+      }
+      // 検出中のマーカー候補は常時表示(静的なA4ガイド枠の代わりに実際の認識結果を見せる)
+      octx.lineWidth = 3;
+      lastCandidates.forEach(function (c) {
+        octx.strokeStyle = (lastQuality.ok ? '#22c55e' : '#facc15');
+        octx.strokeRect(c.minX * kx, c.minY * ky, (c.maxX - c.minX) * kx, (c.maxY - c.minY) * ky);
+      });
+      var ah = activeH(ts);
+      if (ah) {
+        var toV = function (X, Y) { var p = applyH(ah.Hinv, X, Y); return { x: p.x * kx, y: p.y * ky }; };
+        var c0 = toV(SHEET.target.x, SHEET.target.y), re = toV(SHEET.target.x + SHEET.target.r, SHEET.target.y);
+        var rPx = Math.hypot(re.x - c0.x, re.y - c0.y);
+        octx.strokeStyle = ah.stale ? '#f59e0b' : '#3b82f6'; octx.lineWidth = 3;
+        octx.beginPath(); octx.arc(c0.x, c0.y, rPx, 0, Math.PI * 2); octx.stroke();
+        octx.beginPath(); octx.moveTo(c0.x - 10, c0.y); octx.lineTo(c0.x + 10, c0.y); octx.moveTo(c0.x, c0.y - 10); octx.lineTo(c0.x, c0.y + 10); octx.stroke();
+        var sp = ['-1,-1', '1,-1', '1,1', '-1,1'].map(function (q) { var a = q.split(','); return toV(SHEET.start.x + a[0] * SHEET.start.half, SHEET.start.y + a[1] * SHEET.start.half); });
+        octx.strokeStyle = '#22c55e'; octx.beginPath(); octx.moveTo(sp[0].x, sp[0].y); for (var k = 1; k < 4; k++) octx.lineTo(sp[k].x, sp[k].y); octx.closePath(); octx.stroke();
+      }
+      if (latestFingerPxVideo) { octx.fillStyle = '#f59e0b'; octx.beginPath(); octx.arc(latestFingerPxVideo.x, latestFingerPxVideo.y, 10, 0, Math.PI * 2); octx.fill(); }
+    }
+
+    /* ---------- タップ処理（object-fit:containを考慮した座標変換） ---------- */
+    overlay.addEventListener('click', function (e) {
+      var vp = clientToVideoPx(e.clientX, e.clientY);
+      if (!vp) return; // レターボックス部分のタップは無視
+      var ah = activeH(performance.now());
+      if ($('tab-test').classList.contains('active')) {
+        if (!ah) { alert('A4が認識されていません。②で「測定準備完了」にしてください。'); return; }
+        var m = applyH(ah.H, vp.x * procCanvas.width / video.videoWidth, vp.y * procCanvas.height / video.videoHeight);
+        testClicks.push(m); if (testClicks.length > 2) testClicks = [m];
+        renderTest(); return;
+      }
+      if ($('manualModeChk').checked && ah) {
+        latestFingerPxVideo = { x: vp.x, y: vp.y };
+        var mm = applyH(ah.H, vp.x * procCanvas.width / video.videoWidth, vp.y * procCanvas.height / video.videoHeight);
+        updateFingerMM(mm.x, mm.y, ah.stale, performance.now(), lastQuality.ok === true);
+        $('recordBtn').disabled = !trialActive;
+      }
+    });
+    function renderTest() {
+      if (testClicks.length < 2) { $('testResult').textContent = testClicks.length ? '2点目をタップ' : '2点をタップ'; $('testError').textContent = '--'; return; }
+      var d = dist2(testClicks[0], testClicks[1]);
+      $('testResult').textContent = d.toFixed(1) + ' mm';
+      var known = parseFloat($('knownDist').value);
+      $('testError').textContent = isFinite(known) ? ((d - known >= 0 ? '+' : '') + (d - known).toFixed(1) + ' mm') : '--';
+    }
+    $('knownDist').addEventListener('input', renderTest);
+    $('clearTestBtn').addEventListener('click', function () { testClicks = []; renderTest(); });
+
+    renderQuality();
+    window.__debug = { getTrials: function () { return trials; }, getQuality: function () { return lastQuality; }, latest: function () { return latest; }, finger: function () { return currentFingerMM; }, active: function(){ return trialActive; } };
+  } catch (e) {
+    console.error(e);
+    if (window.__appShowError) window.__appShowError('測定モジュール初期化エラー: ' + e.message);
+  }
+})();
+</script>
+</body>
+</html>
